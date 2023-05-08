@@ -25,11 +25,12 @@ export default class ProjectObserver {
     this.dirWatchSubscriptions = [];
 
     this._cache = new Map();
+    this._config = undefined;
     this._indexer = undefined;
     this._projectTasks = new ProjectTasks(this.projectDir, this.options.ide);
     this._updateDirWatchersTimeout = undefined;
-    this._previousActiveEnvName = Object.create(null);
-    this._activeEnvName = undefined;
+    this._previousSelectedEnv = Object.create(null);
+    this._selectedEnv = undefined;
     this._apiConfigChangedTimeout = undefined;
 
     if (this.getSetting('autoRebuild')) {
@@ -46,6 +47,7 @@ export default class ProjectObserver {
     if (this._indexer) {
       this._indexer.dispose();
     }
+    this.resetCache();
   }
 
   activate() {
@@ -64,6 +66,14 @@ export default class ProjectObserver {
     this._cache.clear();
   }
 
+  async getConfig() {
+    if (!this._config) {
+      this._config = new ProjectConfig(this.projectDir);
+      await this._config.read();
+    }
+    return this._config;
+  }
+
   rebuildIndex({ force = false, delayed = false } = {}) {
     if (!force && !this.getSetting('autoRebuild')) {
       return;
@@ -74,48 +84,28 @@ export default class ProjectObserver {
     return delayed ? this._indexer.requestRebuild() : this._indexer.rebuild();
   }
 
-  getActiveEnvName() {
-    return this._activeEnvName;
-  }
-
   async switchProjectEnv(name, { delayedRebuildIndex = false } = {}) {
-    const validNames = (await this.getProjectEnvs()).map((item) => item.name);
+    const validNames = (await this.getConfig()).envs();
     if (!validNames.includes(name)) {
       name = undefined;
     }
-    this._activeEnvName = name;
-    if (this._previousActiveEnvName !== this._activeEnvName || delayedRebuildIndex) {
-      this._previousActiveEnvName = this._activeEnvName;
+    this._selectedEnv = name;
+    if (this._previousSelectedEnv !== this._selectedEnv || delayedRebuildIndex) {
+      this._previousSelectedEnv = this._selectedEnv;
       this.rebuildIndex({ delayed: delayedRebuildIndex });
     }
   }
 
-  async getProjectEnvs() {
-    if (this._cache.has('projectEnvs')) {
-      return this._cache.get('projectEnvs');
+  getSelectedEnv() {
+    return this._selectedEnv;
+  }
+
+  async revealActiveEnvironment() {
+    if (this._selectedEnv) {
+      return this._selectedEnv;
     }
-    const result = [];
-    const prevCWD = process.cwd();
-    process.chdir(this.projectDir);
-    try {
-      const config = new ProjectConfig();
-      await config.read(path.join(this.projectDir, 'platformio.ini'));
-      for (const name of config.envs()) {
-        const platform = config.get(`env:${name}`, 'platform');
-        if (!platform) {
-          continue;
-        }
-        result.push({ name, platform });
-      }
-    } catch (err) {
-      console.warn(
-        `Could not parse "platformio.ini" file in ${this.projectDir}: ${err}`
-      );
-    }
-    // restore original CWD
-    process.chdir(prevCWD);
-    this._cache.set('projectEnvs', result);
-    return result;
+    const config = await this.getConfig();
+    return config.defaultEnv();
   }
 
   async getDefaultTasks() {
@@ -130,8 +120,8 @@ export default class ProjectObserver {
     const lazyLoading =
       options.preload ||
       this.getSetting('autoPreloadEnvTasks') ||
-      this._activeEnvName === name ||
-      (await this.getProjectEnvs()).length === 1;
+      this._selectedEnv === name ||
+      (await this.getConfig()).envs().length === 1;
     if (!lazyLoading) {
       return undefined;
     }
@@ -154,10 +144,11 @@ export default class ProjectObserver {
   }
 
   onDidChangeProjectConfig() {
+    this._config = undefined;
     // reset to `undefined` if env was removed from conf
     this.resetCache();
     // rebuildIndex
-    this.switchProjectEnv(this._activeEnvName, { delayedRebuildIndex: true });
+    this.switchProjectEnv(this._selectedEnv, { delayedRebuildIndex: true });
     this.requestUpdateDirWatchers();
     if ((this.options.api || {}).onDidChangeProjectConfig) {
       if (this._apiConfigChangedTimeout) {
@@ -218,12 +209,7 @@ export default class ProjectObserver {
   async fetchLibDirs() {
     const script = `
 import json
-
-try:
-    from platformio.public import get_project_watch_lib_dirs
-except ImportError:
-  from platformio.project.helpers import get_project_all_lib_dirs as get_project_watch_lib_dirs
-
+from platformio.public import get_project_watch_lib_dirs
 print(json.dumps(get_project_watch_lib_dirs()))
 `;
     const output = await core.getCorePythonCommandOutput(['-c', script], {
