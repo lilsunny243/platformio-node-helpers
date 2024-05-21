@@ -48,8 +48,21 @@ export default class PlatformIOCoreStage extends BaseStage {
         throw new Error('PlatformIO Core has not been installed yet!');
       }
     }
-    // check that PIO Core is installed and load its state an patch OS environ
+    // check that PIO Core is installed
     await this.loadCoreState();
+
+    // check if outdated built-in Python
+    if (await this.isBuiltinPythonOutdated()) {
+      return false;
+    }
+
+    // Setup `platformio` CLI globally for a Node.JS process
+    if (this.params.useBuiltinPIOCore) {
+      proc.extendOSEnvironPath('PLATFORMIO_PATH', [
+        core.getEnvBinDir(),
+        core.getEnvDir(),
+      ]);
+    }
     this.status = BaseStage.STATUS_SUCCESSED;
     return true;
   }
@@ -57,7 +70,7 @@ export default class PlatformIOCoreStage extends BaseStage {
   async loadCoreState() {
     const stateJSONPath = path.join(
       core.getTmpDir(),
-      `core-dump-${Math.round(Math.random() * 100000)}.json`
+      `core-dump-${Math.round(Math.random() * 100000)}.json`,
     );
     const scriptArgs = [];
     if (this.useDevCore()) {
@@ -70,7 +83,7 @@ export default class PlatformIOCoreStage extends BaseStage {
         this.params.disableAutoUpdates || !this.params.useBuiltinPIOCore
           ? '--no-auto-upgrade'
           : '--auto-upgrade',
-      ]
+      ],
     );
     if (this.params.pioCoreVersionSpec) {
       scriptArgs.push(...['--version-spec', this.params.pioCoreVersionSpec]);
@@ -86,16 +99,6 @@ export default class PlatformIOCoreStage extends BaseStage {
     console.info('PIO Core State', coreState);
     core.setCoreState(coreState);
     await fs.unlink(stateJSONPath); // cleanup
-
-    // Add PIO Core virtualenv to global PATH
-    // Setup `platformio` CLI globally for a Node.JS process
-    if (this.params.useBuiltinPIOCore) {
-      proc.extendOSEnvironPath('PLATFORMIO_PATH', [
-        core.getEnvBinDir(),
-        core.getEnvDir(),
-      ]);
-    }
-
     return true;
   }
 
@@ -104,6 +107,37 @@ export default class PlatformIOCoreStage extends BaseStage {
       this.params.useDevelopmentPIOCore ||
       (this.params.pioCoreVersionSpec || '').includes('-')
     );
+  }
+
+  async isBuiltinPythonOutdated() {
+    if (!this.params.useBuiltinPython) {
+      return false;
+    }
+    const builtInPythonDir = PlatformIOCoreStage.getBuiltInPythonDir();
+    const coreState = core.getCoreState();
+    try {
+      await fs.access(builtInPythonDir);
+      if (!coreState.python_version.startsWith('3.9.')) {
+        throw new Error('Not 3.9 Python in penv');
+      }
+      const pkgVersion = (
+        await misc.loadJSON(path.join(builtInPythonDir, 'package.json'))
+      ).version;
+      if (!pkgVersion.startsWith('1.309')) {
+        throw new Error('Not 3.9 Python package');
+      }
+    } catch (err) {
+      return false;
+    }
+    if ((coreState.system || '').startsWith('windows')) {
+      try {
+        await fs.unlink(path.join(builtInPythonDir, 'python.exe'));
+      } catch (err) {
+        return false;
+      }
+    }
+    console.info('Upgrading built-in Python...');
+    return true;
   }
 
   async whereIsPython({ prompt = false } = {}) {
@@ -133,7 +167,7 @@ export default class PlatformIOCoreStage extends BaseStage {
 
     this.status = BaseStage.STATUS_FAILED;
     throw new Error(
-      'Can not find Python Interpreter. Please install Python 3.6 or above manually'
+      'Can not find Python Interpreter. Please install Python 3.6 or above manually',
     );
   }
 
@@ -144,7 +178,7 @@ export default class PlatformIOCoreStage extends BaseStage {
     if (!this.params.useBuiltinPIOCore) {
       this.status = BaseStage.STATUS_FAILED;
       throw new Error(
-        'Could not find compatible PlatformIO Core. Please enable `platformio-ide.useBuiltinPIOCore` setting and restart IDE.'
+        'Could not find compatible PlatformIO Core. Please enable `platformio-ide.useBuiltinPIOCore` setting and restart IDE.',
       );
     }
     this.status = BaseStage.STATUS_INSTALLING;
@@ -179,8 +213,8 @@ export default class PlatformIOCoreStage extends BaseStage {
       console.info(
         await callInstallerScript(
           await this.whereIsPython({ prompt: true }),
-          scriptArgs
-        )
+          scriptArgs,
+        ),
       );
 
       // check that PIO Core is installed and load its state an patch OS environ

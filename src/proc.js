@@ -75,14 +75,14 @@ export function patchOSEnviron({ caller, extraPath, extraVars }) {
     expandedEnvVars.push(matchedEnvVar[1]);
     process.env.PLATFORMIO_PATH = process.env.PLATFORMIO_PATH.replace(
       matchedEnvVar[0],
-      process.env[matchedEnvVar[1]] || ''
+      process.env[matchedEnvVar[1]] || '',
     );
   }
 
   // Configure NO_PROXY for PIO Home
   process.env.NO_PROXY =
     '127.0.0.1' + (process.env.NO_PROXY ? `,${process.env.NO_PROXY}` : '');
-  if (process.env.HTTP_PROXY || process.env.HTTPS_PROXY) {
+  if (process.env.HTTP_PROXY || process.env.HTTPS_PROXY || process.env.ALL_PROXY) {
     process.env.GLOBAL_AGENT_ENVIRONMENT_VARIABLE_NAMESPACE = '';
     bootstrap();
   }
@@ -226,7 +226,7 @@ export function getCommandOutput(cmd, args, options = {}) {
           return reject(err);
         }
       },
-      options
+      options,
     );
   });
 }
